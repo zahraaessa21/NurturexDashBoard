@@ -229,13 +229,21 @@ export default function AppointmentDetail() {
           // Also push a real notification, not just the chat message —
           // reuses the same notification_history -> FCM pipeline already
           // wired up for messages/vaccinations/etc.
-          await supabase.from('notification_history').insert({
-            user_id: appt.parent_id,
-            type: 'lab_results',
-            title: `Lab results ready — ${infant?.name ?? 'your baby'}`,
-            body: 'All requested tests have been reviewed. Check your messages for the full report.',
-            payload: { appointment_id: id },
-          }).catch(() => {})
+          //
+          // NOTE: supabase-js's query builder is "thenable" (works with
+          // await) but is NOT a real Promise, so it has no .catch()
+          // method — chaining .catch() directly on it throws
+          // "insert(...).catch is not a function" the moment this line
+          // runs, before the insert even happens. try/catch instead.
+          try {
+            await supabase.from('notification_history').insert({
+              user_id: appt.parent_id,
+              type: 'lab_results_ready',
+              title: `Lab results ready — ${infant?.name ?? 'your baby'}`,
+              body: 'All requested tests have been reviewed. Check your messages for the full report.',
+              payload: { appointment_id: id },
+            })
+          } catch { /* non-critical — chat message already sent above */ }
 
           toast.success('All results reviewed — PDF sent to the mother in chat.')
         } catch (sendErr) {
