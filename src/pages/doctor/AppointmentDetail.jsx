@@ -172,8 +172,11 @@ export default function AppointmentDetail() {
     }
     setSendingLabs(true)
     try {
-      await labTestService.requestTests({ appointmentId: id, infantId: infant.id, doctorId: user.id, testNames, customNames: customDraft })
-      await labTestService.notifyParent({ parentId: appt.parent_id, infantName: infant?.name ?? 'your baby', testNames: allNames }).catch(() => {})
+      const created = await labTestService.requestTests({ appointmentId: id, infantId: infant.id, doctorId: user.id, testNames, customNames: customDraft })
+      await labTestService.notifyParent({
+        parentId: appt.parent_id, appointmentId: id, infantId: infant.id,
+        infantName: infant?.name ?? 'your baby', tests: created,
+      }).catch(() => {})
       toast.success(allNames.length === 1 ? 'Lab request sent' : `${allNames.length} lab tests sent in one request`)
       setCheckedTests({}); setCustomTest(''); setCustomDraft([])
       await loadAll()
