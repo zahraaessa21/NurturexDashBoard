@@ -57,7 +57,7 @@ export const medicalNoteService = {
       .select(SELECT, { count: 'exact' })
       .order('created_at', { ascending: false })
     if (doctorId)  q = q.eq('doctor_id', doctorId)
-    if (patientId) q = q.eq('patient_id', patientId)
+    if (patientId) q = q.eq('parent_id', patientId)
     if (infantId)  q = q.eq('infant_id', infantId)
     const start = (page - 1) * pageSize
     q = q.range(start, start + pageSize - 1)
@@ -88,12 +88,23 @@ export const medicalNoteService = {
     return data ?? []
   },
 
+  async listForAppointment(appointmentId) {
+    const { data, error } = await supabase
+      .from('medical_notes')
+      .select(SELECT)
+      .eq('appointment_id', appointmentId)
+      .order('created_at', { ascending: false })
+    if (error) throw error
+    return data ?? []
+  },
+
   // ── Create ──────────────────────────────────────────────────
   async create(input) {
     const row = {
       doctor_id:         input.doctor_id ?? null,
-      patient_id:        input.patient_id ?? null,
+      parent_id:         input.parent_id ?? null,
       infant_id:         input.infant_id ?? null,
+      appointment_id:    input.appointment_id ?? null,
       visit_type:        input.visit_type ?? 'routine',
       title:             input.title?.trim(),
       content:           input.content?.trim(),

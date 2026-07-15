@@ -6,29 +6,29 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import {
   ClipboardList, LayoutDashboard, Stethoscope, Calendar, MessageSquare, User,
-  Users, BarChart3, Building2, LogOut, Sun, Moon, X,
-  Baby, Bell, Syringe,
+  Users, BarChart3, Building2, LogOut, X,
+  Baby, Bell, Syringe, UserCheck,
 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import { useAuth } from '../hooks/useAuth'
-import { useTheme } from '../hooks/useTheme'
 import { useToast } from '../hooks/useToast'
 import { cn } from '../utils/cn'
+import { doctorApplicationsAdminService } from '../services/doctorApplicationsAdminService'
 import Logo from './Logo'
 import Avatar from './ui/Avatar'
 
 const ADMIN_NAV = [
   { to: '/admin',              icon: LayoutDashboard, label: 'Dashboard',    end: true },
   { to: '/admin/doctors',      icon: Stethoscope,     label: 'Doctors' },
-  { to: '/admin/patients',     icon: Users,           label: 'Patients' },
+  { to: '/admin/doctor-applications', icon: UserCheck, label: 'Doctor Approval' },
   { to: '/admin/infants',      icon: Baby,            label: 'Infants' },
   { to: '/admin/appointments', icon: Calendar,        label: 'Appointments' },
-  { to: '/admin/alerts',       icon: Bell,            label: 'Alerts' },
   { to: '/admin/reports',      icon: BarChart3,       label: 'Reports' },
+  { to: '/admin/vaccine-schedule', icon: Syringe,     label: 'Vaccine Schedule' },
 ]
 
 const DOCTOR_NAV = [
   { to: '/doctor',              icon: LayoutDashboard, label: 'Dashboard',     end: true },
-  { to: '/doctor/patients',     icon: Users,           label: 'My Patients' },
   { to: '/doctor/infants',      icon: Baby,            label: 'Infants' },
   { to: '/doctor/appointments', icon: Calendar,        label: 'Appointments' },
   { to: '/doctor/messages',     icon: MessageSquare,   label: 'Messages' },
@@ -40,9 +40,23 @@ const DOCTOR_NAV = [
 
 export default function Sidebar({ open, onClose }) {
   const { profile, isAdmin, signOut } = useAuth()
-  const { isDark, toggle } = useTheme()
   const navigate = useNavigate()
   const toast = useToast()
+
+  const [pendingCount, setPendingCount] = useState(0)
+
+  useEffect(() => {
+    if (!isAdmin) return
+    let cancelled = false
+    const load = () => {
+      doctorApplicationsAdminService.countPending()
+        .then((n) => { if (!cancelled) setPendingCount(n) })
+        .catch(() => {})
+    }
+    load()
+    const interval = setInterval(load, 60_000) // refresh every minute
+    return () => { cancelled = true; clearInterval(interval) }
+  }, [isAdmin])
 
   const items = isAdmin ? ADMIN_NAV : DOCTOR_NAV
   const role  = isAdmin ? 'Admin' : 'Doctor'
@@ -112,36 +126,35 @@ export default function Sidebar({ open, onClose }) {
                     <span className="absolute left-0 top-1/2 -translate-y-1/2 h-5 w-0.5 rounded-r bg-brand-600 dark:bg-white" />
                   )}
                   <Icon size={17} className="shrink-0 opacity-90 group-hover:opacity-100" />
-                  <span>{label}</span>
+                  <span className="flex-1">{label}</span>
+                  {to === '/admin/doctor-applications' && pendingCount > 0 && (
+                    <span className="inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold bg-red-500 text-white">
+                      {pendingCount > 99 ? '99+' : pendingCount}
+                    </span>
+                  )}
                 </>
               )}
             </NavLink>
           ))}
-
-          <div className="px-3 mt-6 mb-2 text-[10px] font-bold uppercase tracking-widest text-slate-400 dark:text-zinc-600">
-            System
-          </div>
-          <button
-            type="button"
-            onClick={toggle}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium text-slate-600 hover:text-slate-900 hover:bg-slate-50 dark:text-zinc-400 dark:hover:text-white dark:hover:bg-zinc-900 transition"
-          >
-            {isDark ? <Sun size={17} /> : <Moon size={17} />}
-            {isDark ? 'Light mode' : 'Dark mode'}
-          </button>
         </nav>
 
         {/* Footer */}
         <div className="px-4 py-3 border-t border-slate-200 dark:border-zinc-900 flex items-center gap-3 shrink-0">
-          <Avatar src={profile?.avatar_url} name={profile?.full_name} size="sm" />
-          <div className="min-w-0 flex-1">
-            <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
-              {profile?.full_name ?? 'User'}
+          <button
+            type="button"
+            onClick={() => { navigate(isAdmin ? '/admin/profile' : '/doctor/profile'); onClose?.() }}
+            className="flex items-center gap-3 flex-1 min-w-0 text-left rounded-lg -mx-1 px-1 py-1 hover:bg-slate-50 dark:hover:bg-zinc-900 transition"
+          >
+            <Avatar src={profile?.avatar_url} name={profile?.full_name} size="sm" />
+            <div className="min-w-0 flex-1">
+              <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">
+                {profile?.full_name ?? 'User'}
+              </div>
+              <div className="text-[11px] text-slate-500 dark:text-zinc-500 capitalize truncate">
+                {profile?.role}
+              </div>
             </div>
-            <div className="text-[11px] text-slate-500 dark:text-zinc-500 capitalize truncate">
-              {profile?.role}
-            </div>
-          </div>
+          </button>
           <button
             type="button"
             onClick={handleSignOut}

@@ -2,7 +2,7 @@
 import { supabase } from '../supabaseClient'
 
 export const infantService = {
-  async list({ search = '', status = 'all', doctorId, page = 1, pageSize = 12 } = {}) {
+  async list({ search = '', status = 'all', doctorId, dateFrom = '', dateTo = '', page = 1, pageSize = 12 } = {}) {
     let q = supabase
       .from('infants')
       .select('*, parent:parent_id(id, full_name, email, avatar_url), doctor:doctor_id(id, full_name, specialty)', { count: 'exact' })
@@ -10,10 +10,22 @@ export const infantService = {
 
     if (search.trim()) {
       const s = `%${search.trim()}%`
-      q = q.ilike('name', s)
+      // Can't reliably OR a base-table column against an embedded/joined
+      // table's column in one PostgREST filter — resolve matching parents
+      // first, then OR against infant name + parent_id IN (...).
+      const { data: matchedParents } = await supabase
+        .from('profiles')
+        .select('id')
+        .or(`full_name.ilike.${s},email.ilike.${s}`)
+      const parentIds = (matchedParents ?? []).map(p => p.id)
+      q = parentIds.length > 0
+        ? q.or(`name.ilike.${s},parent_id.in.(${parentIds.join(',')})`)
+        : q.ilike('name', s)
     }
     if (status !== 'all') q = q.eq('status', status)
     if (doctorId) q = q.eq('doctor_id', doctorId)
+    if (dateFrom) q = q.gte('created_at', dateFrom)
+    if (dateTo)   q = q.lte('created_at', dateTo + 'T23:59:59')
 
     const from = (page - 1) * pageSize
     q = q.range(from, from + pageSize - 1)
@@ -46,8 +58,7 @@ export const infantService = {
 
   async create(input) {
     const row = {
-      parent_id:        input.parent_id ?? input.mother_id ?? null,
-      mother_id:        input.mother_id ?? input.parent_id ?? null,
+      parent_id:        input.parent_id ?? null,
       doctor_id:        input.doctor_id ?? null,
       name:             input.name?.trim(),
       date_of_birth:    input.date_of_birth || null,
@@ -64,7 +75,7 @@ export const infantService = {
   },
 
   async update(id, patch) {
-    const allowed = ['mother_id','doctor_id','name','date_of_birth','gender','birth_weight_kg','birth_height_cm','blood_type','notes','status']
+    const allowed = ['parent_id','doctor_id','name','date_of_birth','gender','birth_weight_kg','birth_height_cm','blood_type','notes','status']
     const cleaned = Object.fromEntries(
       Object.entries(patch).filter(([k]) => allowed.includes(k))
     )

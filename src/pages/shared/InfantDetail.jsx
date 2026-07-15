@@ -7,11 +7,13 @@ import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import {
   ArrowLeft, Activity, Syringe, Utensils, Plus, Check, Trash2, AlertCircle,
-  FileText, Pencil, Eye, EyeOff,
+  FileText, History, Calendar, FlaskConical, Pill, CheckCircle2, RefreshCw,
+  FileDown, Loader2,
 } from 'lucide-react'
 import {
   ResponsiveContainer, LineChart, Line, XAxis, YAxis, Tooltip, CartesianGrid, Legend,
 } from 'recharts'
+import { saveAs } from 'file-saver'
 
 import { useAuth }  from '../../hooks/useAuth'
 import { useToast } from '../../hooks/useToast'
@@ -19,23 +21,34 @@ import { infantService }       from '../../services/infantService'
 import { growthService }       from '../../services/growthService'
 import { vaccinationService }  from '../../services/vaccinationService'
 import { feedingService }      from '../../services/feedingService'
-import { medicalNoteService, VISIT_TYPES, NOTE_TEMPLATES }  from '../../services/medicalNoteService'
+import { medicalNoteService }  from '../../services/medicalNoteService'
+import { appointmentService }  from '../../services/appointmentService'
+import { labTestService }      from '../../services/labTestService'
+import { prescriptionService } from '../../services/prescriptionService'
+import { buildInfantRecordPdf, pdfToFile } from '../../utils/pdfExport'
 
 import Avatar      from '../../components/ui/Avatar'
 import Button      from '../../components/ui/Button'
 import Modal       from '../../components/ui/Modal'
-import { Field, Input, Select } from '../../components/ui/Field'
+import { Field, Input } from '../../components/ui/Field'
 import StatusBadge from '../../components/StatusBadge'
 import EmptyState  from '../../components/EmptyState'
 import { Skeleton, SkeletonStatCard } from '../../components/ui/Skeleton'
 import { cn } from '../../utils/cn'
+
+function fmtDate(s) {
+  if (!s) return '—'
+  return new Date(s).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+}
 
 const TABS = [
   { key: 'overview',     label: 'Overview',     icon: Activity },
   { key: 'growth',       label: 'Growth',       icon: Activity },
   { key: 'vaccinations', label: 'Vaccinations', icon: Syringe },
   { key: 'feeding',      label: 'Feeding',      icon: Utensils },
-  { key: 'notes',        label: 'Notes',        icon: FileText },
+  { key: 'labs',         label: 'Lab Tests',    icon: FlaskConical },
+  { key: 'medications',  label: 'Medications',  icon: Pill },
+  { key: 'history',      label: 'Medical History', icon: History },
 ]
 
 export default function InfantDetail() {
@@ -46,6 +59,14 @@ export default function InfantDetail() {
   const back = isAdmin ? '/admin/infants' : '/doctor/infants'
 
   const [tab,    setTab]    = useState('overview')
+  const [regenerating, setRegenerating] = useState(false)
+  const [historyFilter, setHistoryFilter] = useState('all')
+  const [labSearch, setLabSearch] = useState('')
+  const [labFrom,   setLabFrom]   = useState('')
+  const [labTo,     setLabTo]     = useState('')
+  const [medSearch, setMedSearch] = useState('')
+  const [medFrom,   setMedFrom]   = useState('')
+  const [medTo,     setMedTo]     = useState('')
   const [infant, setInfant] = useState(null)
   const [loading, setLoading] = useState(true)
 
@@ -53,13 +74,14 @@ export default function InfantDetail() {
   const [vaccinations, setVaccinations] = useState([])
   const [feedings,     setFeedings]     = useState([])
   const [notes,        setNotes]        = useState([])
+  const [appointments, setAppointments] = useState([])
+  const [labTests,     setLabTests]     = useState([])
+  const [medications,  setMedications]  = useState([])
+  const [downloading,  setDownloading]  = useState(false)
 
   // Modals
   const [growthModal,  setGrowthModal]  = useState(false)
   const [vaxModal,     setVaxModal]     = useState(false)
-  const [feedingModal, setFeedingModal] = useState(false)
-  const [noteModal,    setNoteModal]    = useState(false)
-  const [editingNote,  setEditingNote]  = useState(null)
 
   useEffect(() => {
     if (!id) return
@@ -67,12 +89,15 @@ export default function InfantDetail() {
     setLoading(true)
     ;(async () => {
       try {
-        const [i, g, v, f, n] = await Promise.all([
+        const [i, g, v, f, n, apptRes, tests, meds] = await Promise.all([
           infantService.getById(id),
           growthService.listForInfant(id),
           vaccinationService.listForInfant(id),
           feedingService.listForInfant(id),
           medicalNoteService.listForInfant(id),
+          appointmentService.list({ infantId: id, status: 'all', pageSize: 200 }),
+          labTestService.listForInfant(id),
+          prescriptionService.listForInfant(id),
         ])
         if (cancelled) return
         setInfant(i)
@@ -80,6 +105,9 @@ export default function InfantDetail() {
         setVaccinations(v)
         setFeedings(f)
         setNotes(n)
+        setAppointments(apptRes.rows ?? [])
+        setLabTests(tests)
+        setMedications(meds)
       } catch (err) {
         if (!cancelled) toast.error(err.message ?? 'Could not load infant')
       } finally {
@@ -119,6 +147,106 @@ export default function InfantDetail() {
   const refreshFeeds  = async () => setFeedings(await feedingService.listForInfant(id))
   const refreshNotes  = async () => setNotes(await medicalNoteService.listForInfant(id))
 
+  const handleDownloadRecord = async () => {
+    setDownloading(true)
+    try {
+      const doc = buildInfantRecordPdf({ infant, growth, vaccinations, labTests, medications })
+      const file = pdfToFile(doc, `${(infant.name || 'infant').replace(/\s+/g, '_')}_record.pdf`)
+      saveAs(file, file.name)
+    } catch (err) {
+      toast.error(err.message ?? 'Could not generate the record.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  // ── Unified medical history: every event, chronological, read-only.
+  // Pulls together appointments, vaccinations, lab tests, medications,
+  // and notes — everything that happened for this infant, linked back to
+  // whichever appointment it happened during.
+  const historyEvents = [
+    ...appointments
+      .filter(a => a.status === 'completed')
+      .map(a => ({
+        date: a.scheduled_at,
+        icon: Calendar,
+        color: 'brand',
+        category: 'appointment',
+        label: `Appointment completed`,
+        detail: (a.appt_type ?? 'checkup').replace('_', ' '),
+        appointmentId: a.id,
+      })),
+    ...vaccinations
+      .filter(v => v.status === 'administered' && v.administered_date)
+      .map(v => ({
+        date: v.administered_date,
+        icon: Syringe,
+        color: 'emerald',
+        category: 'vaccination',
+        label: 'Vaccination administered',
+        detail: `${v.vaccine_name}${v.dose_number ? ` — Dose ${v.dose_number}` : ''}`,
+        appointmentId: v.appointment_id,
+      })),
+    ...labTests.map(t => ({
+      date: t.requested_at,
+      icon: FlaskConical,
+      color: 'amber',
+      category: 'lab',
+      label: 'Laboratory test requested',
+      detail: t.test_name,
+      appointmentId: t.appointment_id,
+    })),
+    ...labTests
+      .filter(t => t.status === 'reviewed' && t.reviewed_at)
+      .map(t => ({
+        date: t.reviewed_at,
+        icon: CheckCircle2,
+        color: 'blue',
+        category: 'lab',
+        label: 'Laboratory result reviewed',
+        detail: t.test_name,
+        appointmentId: t.appointment_id,
+      })),
+    ...medications.map(m => ({
+      date: m.created_at,
+      icon: Pill,
+      color: 'purple',
+      category: 'medication',
+      label: 'Medication prescribed',
+      detail: `${m.medication_name} — ${m.dosage}, ${m.frequency}`,
+      appointmentId: m.appointment_id,
+    })),
+    ...notes.map(n => ({
+      date: n.created_at,
+      icon: FileText,
+      color: 'slate',
+      category: 'note',
+      label: n.title || 'Doctor note',
+      detail: n.content?.slice(0, 80),
+      appointmentId: n.appointment_id,
+    })),
+  ]
+    .filter(e => e.date)
+    .sort((a, b) => new Date(b.date) - new Date(a.date))
+
+  const HISTORY_COLORS = {
+    brand:   'bg-brand-50 text-brand-700 dark:bg-brand-500/10 dark:text-brand-300',
+    emerald: 'bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400',
+    amber:   'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400',
+    blue:    'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400',
+    purple:  'bg-purple-50 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400',
+    slate:   'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400',
+  }
+
+  const HISTORY_CATEGORIES = [
+    { key: 'all',         label: 'All',          icon: History },
+    { key: 'appointment', label: 'Appointments', icon: Calendar },
+    { key: 'vaccination', label: 'Vaccinations', icon: Syringe },
+    { key: 'lab',         label: 'Lab Tests',    icon: FlaskConical },
+    { key: 'medication',  label: 'Medications',  icon: Pill },
+    { key: 'note',        label: 'Notes',        icon: FileText },
+  ]
+
   return (
     <>
       <button
@@ -149,6 +277,10 @@ export default function InfantDetail() {
               )}
             </div>
           </div>
+          <Button variant="secondary" size="sm" onClick={handleDownloadRecord} disabled={downloading} className="shrink-0">
+            {downloading ? <Loader2 size={14} className="animate-spin" /> : <FileDown size={14} />}
+            {downloading ? 'Generating…' : 'Download Record (PDF)'}
+          </Button>
         </div>
       </div>
 
@@ -270,10 +402,37 @@ export default function InfantDetail() {
               <h3 className="font-bold text-slate-900 dark:text-white">Vaccinations</h3>
               <p className="text-xs text-slate-500 dark:text-zinc-500">Schedule and administration record.</p>
             </div>
-            <Button size="sm" onClick={() => setVaxModal(true)}><Plus size={13} /> Schedule</Button>
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm" variant="secondary"
+                disabled={!infant?.date_of_birth || regenerating}
+                title={!infant?.date_of_birth ? 'Add a date of birth first' : 'Fill in any vaccines missing from the master schedule'}
+                onClick={async () => {
+                  setRegenerating(true)
+                  try {
+                    const added = await vaccinationService.regenerateSchedule(id)
+                    await refreshVax()
+                    toast.success(added > 0 ? `Added ${added} vaccine${added === 1 ? '' : 's'} to the schedule` : 'Schedule already up to date')
+                  } catch (err) {
+                    toast.error(err.message ?? 'Could not generate schedule')
+                  } finally {
+                    setRegenerating(false)
+                  }
+                }}
+              >
+                <RefreshCw size={13} className={regenerating ? 'animate-spin' : ''} /> Generate schedule
+              </Button>
+              <Button size="sm" onClick={() => setVaxModal(true)}><Plus size={13} /> Schedule</Button>
+            </div>
           </div>
           {vaccinations.length === 0 ? (
-            <EmptyState icon={Syringe} title="No vaccinations scheduled" description="Add the first one to start tracking." />
+            <EmptyState
+              icon={Syringe}
+              title="No vaccinations scheduled"
+              description={infant?.date_of_birth
+                ? 'Click "Generate schedule" to auto-fill from the master vaccine list, or add one manually.'
+                : 'This infant has no date of birth on file — add one in Overview, then generate the schedule automatically.'}
+            />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -325,15 +484,12 @@ export default function InfantDetail() {
       {/* ── Feeding ── */}
       {tab === 'feeding' && (
         <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 overflow-hidden">
-          <div className="p-5 flex items-center justify-between border-b border-slate-200 dark:border-zinc-800">
-            <div>
-              <h3 className="font-bold text-slate-900 dark:text-white">Feeding log</h3>
-              <p className="text-xs text-slate-500 dark:text-zinc-500">Recent feedings (newest first).</p>
-            </div>
-            <Button size="sm" onClick={() => setFeedingModal(true)}><Plus size={13} /> Log feeding</Button>
+          <div className="p-5 border-b border-slate-200 dark:border-zinc-800">
+            <h3 className="font-bold text-slate-900 dark:text-white">Feeding log</h3>
+            <p className="text-xs text-slate-500 dark:text-zinc-500">Logged by the parent via the NurtureX app (newest first).</p>
           </div>
           {feedings.length === 0 ? (
-            <EmptyState icon={Utensils} title="No feedings logged" description="Log the first feeding to start tracking." />
+            <EmptyState icon={Utensils} title="No feedings logged yet" description="Feedings logged by the parent in the app will appear here." />
           ) : (
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
@@ -371,96 +527,246 @@ export default function InfantDetail() {
         </div>
       )}
 
-      {/* ── Notes ── */}
-      {tab === 'notes' && (
-        <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 overflow-hidden">
-          <div className="p-5 flex items-center justify-between border-b border-slate-200 dark:border-zinc-800">
-            <div>
-              <h3 className="font-bold text-slate-900 dark:text-white">Medical notes</h3>
-              <p className="text-xs text-slate-500 dark:text-zinc-500">Notes & recommendations from doctors.</p>
+      {/* ── Lab Tests ── */}
+      {tab === 'labs' && (() => {
+        const filtered = labTests.filter(t => {
+          if (labSearch.trim() && !t.test_name.toLowerCase().includes(labSearch.trim().toLowerCase())) return false
+          const d = t.requested_at?.slice(0, 10)
+          if (labFrom && (!d || d < labFrom)) return false
+          if (labTo && (!d || d > labTo)) return false
+          return true
+        })
+        return (
+          <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 overflow-hidden">
+            <div className="p-4 sm:p-5 flex flex-wrap items-center gap-3 border-b border-slate-200 dark:border-zinc-800">
+              <div className="relative flex-1 min-w-[180px] max-w-xs">
+                <input
+                  value={labSearch} onChange={(e) => setLabSearch(e.target.value)}
+                  placeholder="Search test name…"
+                  className="block w-full h-9 px-3 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-sm outline-none focus:border-brand-500 text-slate-900 dark:text-white placeholder-slate-400"
+                />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-500">
+                <span>Date</span>
+                <input type="date" value={labFrom} onChange={(e) => setLabFrom(e.target.value)}
+                  className="h-9 px-2 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-200 outline-none focus:border-brand-500" />
+                <span>to</span>
+                <input type="date" value={labTo} onChange={(e) => setLabTo(e.target.value)}
+                  className="h-9 px-2 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-200 outline-none focus:border-brand-500" />
+                {(labSearch || labFrom || labTo) && (
+                  <button onClick={() => { setLabSearch(''); setLabFrom(''); setLabTo('') }} className="text-brand-700 dark:text-white font-semibold hover:underline">clear</button>
+                )}
+              </div>
+              <div className="ml-auto text-xs text-slate-500 dark:text-zinc-500">{filtered.length} of {labTests.length}</div>
             </div>
-            <Button size="sm" onClick={() => { setEditingNote(null); setNoteModal(true) }}>
-              <Plus size={13} /> Add note
-            </Button>
+
+            {filtered.length === 0 ? (
+              <EmptyState icon={FlaskConical} title="No lab tests" description="Tests requested during appointments will show up here." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 dark:text-zinc-500 border-b border-slate-200 dark:border-zinc-800">
+                      <th className="px-5 py-3 font-medium">Test</th>
+                      <th className="px-5 py-3 font-medium">Requested</th>
+                      <th className="px-5 py-3 font-medium">Status</th>
+                      <th className="px-5 py-3 font-medium">Result</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
+                    {filtered.map(t => (
+                      <tr key={t.id} className="hover:bg-slate-50 dark:hover:bg-zinc-900/50">
+                        <td className="px-5 py-3.5 font-medium text-slate-900 dark:text-white">{t.test_name}</td>
+                        <td className="px-5 py-3.5 text-slate-600 dark:text-zinc-300">{fmtDate(t.requested_at)}</td>
+                        <td className="px-5 py-3.5">
+                          {t.status === 'reviewed'
+                            ? <StatusBadge status="reviewed" />
+                            : <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[11px] font-semibold bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400">Waiting</span>}
+                        </td>
+                        <td className="px-5 py-3.5 text-slate-500 dark:text-zinc-400 max-w-xs truncate">{t.doctor_notes ?? '—'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
-          {notes.length === 0 ? (
-            <EmptyState icon={FileText} title="No notes yet" description="Click 'Add note' to write the first one." />
-          ) : (
-            <ul className="divide-y divide-slate-100 dark:divide-zinc-800">
-              {notes.map(n => (
-                <li key={n.id} className="p-5 group">
-                  <div className="flex items-start justify-between gap-3 mb-2">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-1.5 mb-1.5">
-                        {(() => {
-                          const vt = VISIT_TYPES.find(v => v.value === n.visit_type)
-                          return vt ? (
-                            <span className="inline-flex items-center text-[10px] font-bold uppercase tracking-wide px-2 py-0.5 rounded-full bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400">
-                              {vt.label}
-                            </span>
-                          ) : null
-                        })()}
-                        {n.is_parent_visible ? (
-                          <span className="inline-flex items-center gap-1 text-[10px] text-green-600 dark:text-green-400 font-medium">
-                            <Eye size={9} /> Shared
-                          </span>
-                        ) : (
-                          <span className="inline-flex items-center gap-1 text-[10px] text-slate-400 dark:text-zinc-600 font-medium">
-                            <EyeOff size={9} /> Private
-                          </span>
-                        )}
-                      </div>
-                      <h4 className="font-bold text-slate-900 dark:text-white text-sm">{n.title}</h4>
-                      {n.diagnosis && <p className="text-xs text-slate-500 dark:text-zinc-500">Dx: {n.diagnosis}</p>}
-                      <div className="text-[11px] text-slate-500 dark:text-zinc-500 mt-0.5">
-                        {n.doctor?.full_name ? `Dr. ${n.doctor.full_name}` : '—'}
-                        {' · '}{new Date(n.created_at).toLocaleString()}
-                      </div>
+        )
+      })()}
+
+      {/* ── Medications ── */}
+      {tab === 'medications' && (() => {
+        const filtered = medications.filter(m => {
+          if (medSearch.trim() && !m.medication_name.toLowerCase().includes(medSearch.trim().toLowerCase())) return false
+          const d = m.created_at?.slice(0, 10)
+          if (medFrom && (!d || d < medFrom)) return false
+          if (medTo && (!d || d > medTo)) return false
+          return true
+        })
+        return (
+          <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 overflow-hidden">
+            <div className="p-4 sm:p-5 flex flex-wrap items-center gap-3 border-b border-slate-200 dark:border-zinc-800">
+              <div className="relative flex-1 min-w-[180px] max-w-xs">
+                <input
+                  value={medSearch} onChange={(e) => setMedSearch(e.target.value)}
+                  placeholder="Search medication name…"
+                  className="block w-full h-9 px-3 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-sm outline-none focus:border-brand-500 text-slate-900 dark:text-white placeholder-slate-400"
+                />
+              </div>
+              <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-500">
+                <span>Date</span>
+                <input type="date" value={medFrom} onChange={(e) => setMedFrom(e.target.value)}
+                  className="h-9 px-2 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-200 outline-none focus:border-brand-500" />
+                <span>to</span>
+                <input type="date" value={medTo} onChange={(e) => setMedTo(e.target.value)}
+                  className="h-9 px-2 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-200 outline-none focus:border-brand-500" />
+                {(medSearch || medFrom || medTo) && (
+                  <button onClick={() => { setMedSearch(''); setMedFrom(''); setMedTo('') }} className="text-brand-700 dark:text-white font-semibold hover:underline">clear</button>
+                )}
+              </div>
+              <div className="ml-auto text-xs text-slate-500 dark:text-zinc-500">{filtered.length} of {medications.length}</div>
+            </div>
+
+            {filtered.length === 0 ? (
+              <EmptyState icon={Pill} title="No medications" description="Prescriptions from appointments will show up here." />
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="text-left text-xs text-slate-500 dark:text-zinc-500 border-b border-slate-200 dark:border-zinc-800">
+                      <th className="px-5 py-3 font-medium">Medication</th>
+                      <th className="px-5 py-3 font-medium">Dosage</th>
+                      <th className="px-5 py-3 font-medium">Frequency</th>
+                      <th className="px-5 py-3 font-medium">Duration</th>
+                      <th className="px-5 py-3 font-medium">Prescribed</th>
+                      <th className="px-5 py-3 font-medium">Status</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 dark:divide-zinc-800">
+                    {filtered.map(m => (
+                      <tr key={m.id} className="hover:bg-slate-50 dark:hover:bg-zinc-900/50">
+                        <td className="px-5 py-3.5 font-medium text-slate-900 dark:text-white">{m.medication_name}</td>
+                        <td className="px-5 py-3.5 text-slate-600 dark:text-zinc-300">{m.dosage}</td>
+                        <td className="px-5 py-3.5 text-slate-600 dark:text-zinc-300">{m.frequency}</td>
+                        <td className="px-5 py-3.5 text-slate-600 dark:text-zinc-300">{m.duration}</td>
+                        <td className="px-5 py-3.5 text-slate-600 dark:text-zinc-300">{fmtDate(m.created_at)}</td>
+                        <td className="px-5 py-3.5"><StatusBadge status={m.status} /></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )
+      })()}
+
+      {/* ── Medical History (unified, read-only) ── */}
+      {tab === 'history' && (
+        <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-5 sm:p-6">
+          <div className="mb-5">
+            <h3 className="font-bold text-slate-900 dark:text-white">Medical History</h3>
+            <p className="text-xs text-slate-500 dark:text-zinc-500 mt-0.5">
+              Everything that's happened for {infant.name}, automatically compiled — newest first.
+            </p>
+          </div>
+
+          {/* Filter chips — also double as an at-a-glance count per category */}
+          <div className="flex flex-wrap gap-2 mb-6">
+            {HISTORY_CATEGORIES.map((c) => {
+              const count = c.key === 'all' ? historyEvents.length : historyEvents.filter(e => e.category === c.key).length
+              const active = historyFilter === c.key
+              const CatIcon = c.icon
+              return (
+                <button
+                  key={c.key}
+                  onClick={() => setHistoryFilter(c.key)}
+                  className={cn(
+                    'inline-flex items-center gap-1.5 px-3 h-9 rounded-full text-xs font-semibold border transition',
+                    active
+                      ? 'bg-brand-700 text-white border-brand-700 dark:bg-white dark:text-black dark:border-white'
+                      : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50 dark:bg-zinc-900 dark:text-zinc-400 dark:border-zinc-800 dark:hover:bg-zinc-800',
+                  )}
+                >
+                  <CatIcon size={13} /> {c.label}
+                  <span className={cn(
+                    'inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full text-[10px] font-bold',
+                    active ? 'bg-white/20' : 'bg-slate-100 dark:bg-zinc-800',
+                  )}>
+                    {count}
+                  </span>
+                </button>
+              )
+            })}
+          </div>
+
+          {(() => {
+            const filtered = historyFilter === 'all' ? historyEvents : historyEvents.filter(e => e.category === historyFilter)
+
+            if (filtered.length === 0) {
+              return (
+                <EmptyState
+                  icon={History}
+                  title={historyFilter === 'all' ? 'No history yet' : 'Nothing in this category yet'}
+                  description="Medical events will appear here automatically as they happen."
+                />
+              )
+            }
+
+            // Group into date sections so a busy record is easy to scan.
+            const groups = []
+            for (const e of filtered) {
+              const dayKey = new Date(e.date).toDateString()
+              let group = groups.find(g => g.dayKey === dayKey)
+              if (!group) { group = { dayKey, date: e.date, items: [] }; groups.push(group) }
+              group.items.push(e)
+            }
+
+            return (
+              <div className="space-y-6">
+                {groups.map((g) => (
+                  <div key={g.dayKey}>
+                    <div className="text-xs font-bold uppercase tracking-wider text-slate-400 dark:text-zinc-600 mb-2.5">
+                      {new Date(g.date).toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' })}
                     </div>
-                    <div className="flex items-center gap-1 shrink-0 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <Button variant="ghost" size="xs"
-                        onClick={async () => {
-                          await medicalNoteService.toggleVisibility(n.id, !n.is_parent_visible)
-                          toast.success(n.is_parent_visible ? 'Hidden from parent' : 'Visible to parent')
-                          refreshNotes()
-                        }}
-                        title={n.is_parent_visible ? 'Hide from parent' : 'Share with parent'}>
-                        {n.is_parent_visible ? <EyeOff size={12} /> : <Eye size={12} />}
-                      </Button>
-                      <Button variant="ghost" size="xs" onClick={() => { setEditingNote(n); setNoteModal(true) }} title="Edit"><Pencil size={12} /></Button>
-                      <Button variant="danger" size="xs" onClick={async () => {
-                        if (!confirm('Delete this note?')) return
-                        await medicalNoteService.remove(n.id)
-                        toast.success('Note deleted'); refreshNotes()
-                      }} title="Delete"><Trash2 size={12} /></Button>
+                    <div className="space-y-2.5">
+                      {g.items.map((e, i) => {
+                        const Icon = e.icon
+                        return (
+                          <div
+                            key={i}
+                            className="flex items-start gap-3 rounded-xl border border-slate-100 dark:border-zinc-800 p-3.5 hover:border-slate-200 dark:hover:border-zinc-700 transition"
+                          >
+                            <span className={cn('w-9 h-9 rounded-lg grid place-items-center shrink-0', HISTORY_COLORS[e.color])}>
+                              <Icon size={16} />
+                            </span>
+                            <div className="min-w-0 flex-1">
+                              <div className="font-semibold text-sm text-slate-900 dark:text-white">{e.label}</div>
+                              {e.detail && <div className="text-sm text-slate-500 dark:text-zinc-400 mt-0.5">{e.detail}</div>}
+                              {!isAdmin && e.appointmentId && (
+                                <button
+                                  onClick={() => navigate(`/doctor/appointments/${e.appointmentId}`)}
+                                  className="text-xs font-semibold text-brand-700 dark:text-brand-300 hover:underline mt-1.5"
+                                >
+                                  View appointment →
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
                     </div>
                   </div>
-                  <p className="text-sm text-slate-700 dark:text-zinc-300 leading-relaxed line-clamp-3">{n.content}</p>
-                  {n.recommendations && (
-                    <div className="mt-3 rounded-lg bg-brand-50 dark:bg-zinc-950 border-l-[3px] border-brand-500 dark:border-zinc-600 px-3 py-2.5">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-brand-700 dark:text-zinc-400 mb-1">Recommendations</div>
-                      <p className="text-xs text-slate-700 dark:text-zinc-300 leading-relaxed">{n.recommendations}</p>
-                    </div>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
+                ))}
+              </div>
+            )
+          })()}
         </div>
       )}
 
       {/* Modals */}
       <GrowthModal open={growthModal} onClose={() => setGrowthModal(false)} infantId={id} onSaved={refreshGrowth} />
       <VaxModal    open={vaxModal}    onClose={() => setVaxModal(false)}    infantId={id} onSaved={refreshVax} />
-      <FeedingModal open={feedingModal} onClose={() => setFeedingModal(false)} infantId={id} onSaved={refreshFeeds} />
-      <NoteModal
-        open={noteModal}
-        onClose={() => setNoteModal(false)}
-        infantId={id}
-        doctorId={infant?.doctor_id}
-        editing={editingNote}
-        onSaved={refreshNotes}
-      />
     </>
   )
 }
@@ -527,181 +833,6 @@ function VaxModal({ open, onClose, infantId, onSaved }) {
         <Field label="Vaccine name" required><Input value={f.vaccine_name} onChange={(e) => setF(v => ({ ...v, vaccine_name: e.target.value }))} placeholder="e.g. BCG, MMR" disabled={saving} /></Field>
         <Field label="Scheduled date"><Input type="date" value={f.scheduled_date} onChange={(e) => setF(v => ({ ...v, scheduled_date: e.target.value }))} disabled={saving} /></Field>
         <Field label="Notes"><Input value={f.notes} onChange={(e) => setF(v => ({ ...v, notes: e.target.value }))} disabled={saving} /></Field>
-      </form>
-    </Modal>
-  )
-}
-
-function FeedingModal({ open, onClose, infantId, onSaved }) {
-  const toast = useToast()
-  const [f, setF] = useState({ feed_type: 'breast', amount_ml: '', duration_min: '', notes: '' })
-  const [saving, setSaving] = useState(false)
-  const submit = async (e) => {
-    e.preventDefault(); setSaving(true)
-    try { await feedingService.create({ infant_id: infantId, ...f }); toast.success('Feeding logged'); await onSaved(); onClose() }
-    catch (e) { toast.error(e.message) }
-    finally { setSaving(false) }
-  }
-  return (
-    <Modal open={open} onClose={() => !saving && onClose()} title="Log feeding"
-      footer={<><Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button><Button onClick={submit} loading={saving}>Save</Button></>}>
-      <form onSubmit={submit}>
-        <Field label="Type">
-          <Select value={f.feed_type} onChange={(e) => setF(v => ({ ...v, feed_type: e.target.value }))} disabled={saving}>
-            <option value="breast">Breast</option>
-            <option value="formula">Formula</option>
-            <option value="solid">Solid</option>
-            <option value="mixed">Mixed</option>
-          </Select>
-        </Field>
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <Field label="Amount (ml)"><Input type="number" value={f.amount_ml} onChange={(e) => setF(v => ({ ...v, amount_ml: e.target.value }))} disabled={saving} /></Field>
-          <Field label="Duration (min)"><Input type="number" value={f.duration_min} onChange={(e) => setF(v => ({ ...v, duration_min: e.target.value }))} disabled={saving} /></Field>
-        </div>
-        <Field label="Notes"><Input value={f.notes} onChange={(e) => setF(v => ({ ...v, notes: e.target.value }))} disabled={saving} /></Field>
-      </form>
-    </Modal>
-  )
-}
-
-function NoteModal({ open, onClose, infantId, doctorId, editing, onSaved }) {
-  const toast   = useToast()
-  const { user } = useAuth()
-
-  const blank = { visit_type: 'routine', title: '', content: '', recommendations: '', diagnosis: '', is_parent_visible: true }
-  const [f,      setF]      = useState(blank)
-  const [saving, setSaving] = useState(false)
-  const [err,    setErr]    = useState('')
-
-  useEffect(() => {
-    setErr('')
-    if (editing) {
-      setF({
-        visit_type:        editing.visit_type        ?? 'routine',
-        title:             editing.title             ?? '',
-        content:           editing.content           ?? '',
-        recommendations:   editing.recommendations   ?? '',
-        diagnosis:         editing.diagnosis         ?? '',
-        is_parent_visible: editing.is_parent_visible ?? true,
-      })
-    } else {
-      setF(blank)
-    }
-  }, [open, editing])
-
-  const applyTemplate = (type) => {
-    const tpl = NOTE_TEMPLATES[type]
-    if (!tpl) return
-    setF(v => ({ ...v, visit_type: type, title: tpl.title, content: tpl.content, recommendations: tpl.recommendations }))
-  }
-
-  const set = (k, v) => setF(prev => ({ ...prev, [k]: v }))
-
-  const submit = async (e) => {
-    e.preventDefault(); setErr('')
-    if (!f.title.trim())   { setErr('Title is required.'); return }
-    if (!f.content.trim()) { setErr('Note content is required.'); return }
-    setSaving(true)
-    try {
-      if (editing) {
-        await medicalNoteService.update(editing.id, f)
-        toast.success('Note updated')
-      } else {
-        await medicalNoteService.create({
-          ...f,
-          infant_id: infantId,
-          doctor_id: user?.id ?? doctorId ?? null,
-        })
-        toast.success('Note added')
-      }
-      await onSaved(); onClose()
-    } catch (e) {
-      setErr(e.message); toast.error(e.message)
-    } finally { setSaving(false) }
-  }
-
-  return (
-    <Modal
-      open={open}
-      onClose={() => !saving && onClose()}
-      title={editing ? 'Edit medical note' : 'Add medical note'}
-      size="lg"
-      footer={
-        <>
-          <Button variant="secondary" onClick={onClose} disabled={saving}>Cancel</Button>
-          <Button onClick={submit} loading={saving}>{editing ? 'Save changes' : 'Add note'}</Button>
-        </>
-      }
-    >
-      <form onSubmit={submit} className="space-y-4">
-        {err && (
-          <div className="rounded-lg border-l-[3px] border-red-500 bg-red-50 dark:bg-red-500/10 px-4 py-3 flex gap-2.5 text-sm text-red-700 dark:text-red-400">
-            <AlertCircle size={16} className="shrink-0 mt-0.5" /><span>{err}</span>
-          </div>
-        )}
-
-        {/* Templates */}
-        {!editing && (
-          <div className="rounded-xl bg-slate-50 dark:bg-zinc-950 border border-slate-200 dark:border-zinc-800 p-3">
-            <p className="text-xs font-bold text-slate-500 dark:text-zinc-500 uppercase tracking-wider mb-2">Quick templates</p>
-            <div className="flex flex-wrap gap-1.5">
-              {Object.entries(NOTE_TEMPLATES).map(([type]) => {
-                const vt = VISIT_TYPES.find(v => v.value === type)
-                return (
-                  <button key={type} type="button" onClick={() => applyTemplate(type)}
-                    className="text-xs px-2.5 py-1 rounded-full border border-slate-200 dark:border-zinc-700 bg-white dark:bg-zinc-900 hover:bg-brand-50 dark:hover:bg-zinc-800 text-slate-600 dark:text-zinc-400 hover:text-brand-700 dark:hover:text-brand-400 transition-colors">
-                    {vt?.label ?? type}
-                  </button>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        <div className="grid grid-cols-2 gap-3">
-          <Field label="Visit type" required>
-            <Select value={f.visit_type} onChange={e => set('visit_type', e.target.value)} disabled={saving}>
-              {VISIT_TYPES.map(v => <option key={v.value} value={v.value}>{v.label}</option>)}
-            </Select>
-          </Field>
-          <Field label="Diagnosis (optional)">
-            <Input value={f.diagnosis} onChange={e => set('diagnosis', e.target.value)}
-              placeholder="e.g. URTI" disabled={saving} />
-          </Field>
-        </div>
-
-        <Field label="Title" required>
-          <Input value={f.title} onChange={e => set('title', e.target.value)}
-            placeholder="e.g. Routine 3-month checkup" disabled={saving} />
-        </Field>
-
-        <Field label="Clinical note" required>
-          <textarea value={f.content} onChange={e => set('content', e.target.value)} rows={5}
-            placeholder="Observations, examination findings…" disabled={saving}
-            className="block w-full px-3.5 py-2.5 rounded-lg text-sm bg-white dark:bg-zinc-900 text-slate-900 dark:text-white border border-slate-200 dark:border-zinc-800 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 outline-none resize-y" />
-        </Field>
-
-        <Field label="Recommendations">
-          <textarea value={f.recommendations} onChange={e => set('recommendations', e.target.value)} rows={3}
-            placeholder="Follow-up actions, prescriptions…" disabled={saving}
-            className="block w-full px-3.5 py-2.5 rounded-lg text-sm bg-white dark:bg-zinc-900 text-slate-900 dark:text-white border border-slate-200 dark:border-zinc-800 focus:border-brand-500 focus:ring-4 focus:ring-brand-500/15 outline-none resize-y" />
-        </Field>
-
-        {/* Visibility */}
-        <label className="flex items-center gap-3 cursor-pointer rounded-xl border border-slate-200 dark:border-zinc-800 p-3 hover:bg-slate-50 dark:hover:bg-zinc-950 transition-colors">
-          <div onClick={() => set('is_parent_visible', !f.is_parent_visible)}
-            className={`relative w-9 h-5 rounded-full transition-colors ${f.is_parent_visible ? 'bg-brand-600' : 'bg-slate-300 dark:bg-zinc-700'}`}>
-            <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${f.is_parent_visible ? 'left-4' : 'left-0.5'}`} />
-          </div>
-          <div>
-            <p className="text-sm font-semibold text-slate-900 dark:text-white">
-              {f.is_parent_visible ? 'Visible to parent' : 'Hidden from parent'}
-            </p>
-            <p className="text-[11px] text-slate-500 dark:text-zinc-500">
-              {f.is_parent_visible ? 'Parent can read this in the app' : 'Private — only you and admins can see it'}
-            </p>
-          </div>
-        </label>
       </form>
     </Modal>
   )

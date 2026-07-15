@@ -3,7 +3,7 @@
 // Mothers (patients) management for admins. Full CRUD + doctor assignment.
 
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Search, Pencil, Trash2, Users, RefreshCw, AlertCircle, Phone, Mail } from 'lucide-react'
+import { Search, Pencil, Trash2, Users, RefreshCw, AlertCircle, Phone, Mail } from 'lucide-react'
 import { patientService } from '../../services/patientService'
 import { adminService }   from '../../services/adminService'
 import { useToast } from '../../hooks/useToast'
@@ -139,7 +139,6 @@ export default function AdminPatients() {
             Mothers in the system. Assign each one to a doctor.
           </p>
         </div>
-        <Button onClick={openCreate}><Plus size={14} /> Add patient</Button>
       </div>
 
       <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 overflow-hidden">
@@ -191,8 +190,7 @@ export default function AdminPatients() {
                   <EmptyState
                     icon={Users}
                     title={search ? 'No patients match' : 'No patients yet'}
-                    description={search ? 'Try a different search.' : 'Click "Add patient" to create the first record.'}
-                    action={!search && <Button onClick={openCreate}><Plus size={14} /> Add patient</Button>}
+                    description={search ? 'Try a different search.' : 'Mothers will appear here once registered.'}
                   />
                 </td></tr>
               ) : rows.map(p => (

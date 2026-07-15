@@ -91,7 +91,7 @@ export const appointmentService = {
     }
 
     const doctorId = input.doctor_id ?? null
-    const parentId = input.parent_id ?? input.patient_id ?? null
+    const parentId = input.parent_id ?? null
 
     // Prevent duplicate: same doctor + same exact time, not canceled.
     if (doctorId) {

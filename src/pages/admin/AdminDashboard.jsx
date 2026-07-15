@@ -2,20 +2,18 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Stethoscope, UserCheck, Sparkles, Plus, ShieldCheck,
+  Stethoscope, UserCheck, Sparkles, ShieldCheck,
   Users, Baby, Bell, Syringe,
 } from 'lucide-react'
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts'
 
 import { adminService }       from '../../services/adminService'
-import { alertService }       from '../../services/alertService'
 import { vaccinationService } from '../../services/vaccinationService'
 import { useToast } from '../../hooks/useToast'
 
 import StatCard      from '../../components/StatCard'
 import StatusBadge   from '../../components/StatusBadge'
 import EmptyState    from '../../components/EmptyState'
-import Button        from '../../components/ui/Button'
 import Avatar        from '../../components/ui/Avatar'
 import { SkeletonStatCard, Skeleton } from '../../components/ui/Skeleton'
 
@@ -26,7 +24,6 @@ export default function AdminDashboard() {
   const [stats,        setStats]        = useState(null)
   const [growth,       setGrowth]       = useState([])
   const [recent,       setRecent]       = useState([])
-  const [openAlerts,   setOpenAlerts]   = useState([])
   const [upcomingVax,  setUpcomingVax]  = useState([])
   const [loading,      setLoading]      = useState(true)
 
@@ -35,14 +32,13 @@ export default function AdminDashboard() {
   const load = async () => {
     setLoading(true)
     try {
-      const [s, g, r, a, v] = await Promise.all([
+      const [s, g, r, v] = await Promise.all([
         adminService.getStats(),
         adminService.getMonthlyGrowth(),
         adminService.listDoctors({ pageSize: 5 }),
-        alertService.list({ status: 'open', limit: 5 }),
         vaccinationService.upcoming({ days: 14, limit: 5 }),
       ])
-      setStats(s); setGrowth(g); setRecent(r.rows); setOpenAlerts(a); setUpcomingVax(v)
+      setStats(s); setGrowth(g); setRecent(r.rows); setUpcomingVax(v)
     } catch (err) {
       toast.error(err.message ?? 'Failed to load dashboard')
     } finally {
@@ -65,22 +61,18 @@ export default function AdminDashboard() {
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-full text-xs font-semibold bg-purple-50 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400">
             <ShieldCheck size={12} /> Admin View
           </span>
-          <Button onClick={() => navigate('/admin/doctors')}>
-            <Plus size={14} /> Add doctor
-          </Button>
         </div>
       </div>
 
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 mb-8">
+      <div className="grid grid-cols-2 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
         {loading ? (
-          <>{Array.from({ length: 5 }).map((_, i) => <SkeletonStatCard key={i} />)}</>
+          <>{Array.from({ length: 4 }).map((_, i) => <SkeletonStatCard key={i} />)}</>
         ) : (
           <>
             <StatCard icon={Stethoscope} label="Doctors" value={stats.doctorsTotal} iconClass="bg-brand-50 text-brand-700 dark:bg-zinc-800 dark:text-zinc-200" />
             <StatCard icon={UserCheck}   label="Active doctors" value={stats.doctorsActive} iconClass="bg-emerald-50 text-emerald-700 dark:bg-emerald-500/10 dark:text-emerald-400" />
             <StatCard icon={Users}       label="Patients (mothers)" value={stats.patientsTotal} iconClass="bg-purple-50 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400" />
             <StatCard icon={Baby}        label="Infants" value={stats.infantsTotal} iconClass="bg-pink-50 text-pink-700 dark:bg-pink-500/10 dark:text-pink-400" />
-            <StatCard icon={Bell}        label="Open alerts" value={stats.alertsOpen} iconClass="bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400" />
           </>
         )}
       </div>
@@ -144,29 +136,8 @@ export default function AdminDashboard() {
           )}
         </div>
 
-        {/* Open alerts */}
-        <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-5">
-          <div className="flex items-center justify-between mb-3">
-            <h2 className="font-bold text-slate-900 dark:text-white">Recent alerts</h2>
-            <button onClick={() => navigate('/admin/alerts')} className="text-xs font-semibold text-brand-700 dark:text-white hover:underline">View all →</button>
-          </div>
-          {loading ? <div className="space-y-3">{[1,2,3].map(i => <Skeleton key={i} className="h-14" />)}</div>
-          : openAlerts.length === 0 ? (
-            <EmptyState icon={Bell} title="All clear" description="No open alerts right now." />
-          ) : (
-            <ul className="space-y-2">
-              {openAlerts.map(a => (
-                <li key={a.id} className="rounded-lg border border-slate-200 dark:border-zinc-800 p-3">
-                  <div className="text-sm font-semibold text-slate-900 dark:text-white truncate">{a.subject}</div>
-                  <div className="text-[11px] text-slate-500 dark:text-zinc-500 mt-0.5 capitalize">{a.severity} · {new Date(a.created_at).toLocaleDateString()}</div>
-                </li>
-              ))}
-            </ul>
-          )}
-        </div>
-
         {/* Upcoming vaccinations */}
-        <div className="lg:col-span-2 rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-5">
+        <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 p-5">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="font-bold text-slate-900 dark:text-white">Upcoming vaccinations</h2>

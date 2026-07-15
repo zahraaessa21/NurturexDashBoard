@@ -128,12 +128,16 @@ export const directMessageService = {
    * @param {string} o.conversationId
    * @param {string} o.senderId
    * @param {File}   o.file              the File/Blob to upload
+   * @param {'voice'|null} [o.kind]      force the marker (e.g. 'voice' for
+   *                                     a recorded note) instead of relying
+   *                                     on auto image/file detection
    * @param {(pct:number)=>void} [o.onProgress]  0..100 (best-effort)
    */
-  async sendAttachment({ conversationId, senderId, file, onProgress }) {
+  async sendAttachment({ conversationId, senderId, file, kind, onProgress }) {
     if (!file) throw new Error('No file selected.')
     const isImage = (file.type || '').startsWith('image/')
-    const safeName = (file.name || (isImage ? 'photo.jpg' : 'file'))
+    const isVoice = kind === 'voice'
+    const safeName = (file.name || (isImage ? 'photo.jpg' : isVoice ? 'voice-message.webm' : 'file'))
       .replace(/[^\w.\-]+/g, '_')
     const path = `${conversationId}/${Date.now()}_${safeName}`
 
@@ -156,7 +160,7 @@ export const directMessageService = {
     const url = pub?.publicUrl
     if (!url) throw new Error('Could not get the file URL.')
 
-    const marker = isImage ? '[[img]]' : '[[file]]'
+    const marker = isVoice ? '[[voice]]' : isImage ? '[[img]]' : '[[file]]'
     const content = `${marker}${url}|${file.name || safeName}`
 
     const { data, error } = await supabase

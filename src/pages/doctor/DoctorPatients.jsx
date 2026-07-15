@@ -44,7 +44,7 @@ export default function DoctorPatients() {
         try {
           const { rows: inf } = await infantService.list({ doctorId: user.id, pageSize: 100 })
           // Filter infants belonging to this parent
-          const myInfants = inf.filter(i => i.parent_id === p.id || i.mother_id === p.id)
+          const myInfants = inf.filter(i => i.parent_id === p.id)
           return { ...p, infants: myInfants }
         } catch { return { ...p, infants: [] } }
       }))

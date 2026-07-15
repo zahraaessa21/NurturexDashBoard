@@ -17,7 +17,7 @@ export const adminService = {
    * @param {number} [opts.page]    1-indexed
    * @param {number} [opts.pageSize]
    */
-  async listDoctors({ search = '', status = 'all', page = 1, pageSize = 10 } = {}) {
+  async listDoctors({ search = '', status = 'all', dateFrom = '', dateTo = '', page = 1, pageSize = 10 } = {}) {
     let query = supabase
       .from('profiles')
       .select('*', { count: 'exact' })
@@ -30,6 +30,8 @@ export const adminService = {
     }
     if (status === 'active')   query = query.eq('status', 'active')
     if (status === 'inactive') query = query.neq('status', 'active')
+    if (dateFrom) query = query.gte('created_at', dateFrom)
+    if (dateTo)   query = query.lte('created_at', dateTo + 'T23:59:59')
 
     const from = (page - 1) * pageSize
     const to   = from + pageSize - 1
@@ -41,13 +43,15 @@ export const adminService = {
   },
 
   /** Lightweight list of active doctors, used to populate selects. */
-  async listDoctorsForSelect() {
-    const { data, error } = await supabase
+  async listDoctorsForSelect({ specialty } = {}) {
+    let query = supabase
       .from('profiles')
       .select('id, full_name, specialty')
       .eq('role', 'doctor')
       .eq('status', 'active')
       .order('full_name')
+    if (specialty) query = query.eq('specialty', specialty)
+    const { data, error } = await query
     if (error) throw error
     return data ?? []
   },
@@ -57,7 +61,7 @@ export const adminService = {
     const [doctorsTotal, doctorsActive, patientsTotal, infantsTotal, alertsOpen, recentDoctors] = await Promise.all([
       supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'doctor'),
       supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'doctor').eq('status', 'active'),
-      supabase.from('patients').select('*', { count: 'exact', head: true }),
+      supabase.from('profiles').select('*', { count: 'exact', head: true }).eq('role', 'parent'),
       supabase.from('infants').select('*', { count: 'exact', head: true }),
       supabase.from('alerts').select('*', { count: 'exact', head: true }).eq('status', 'open'),
       supabase.from('profiles').select('*', { count: 'exact', head: true })
@@ -182,5 +186,37 @@ export const adminService = {
       .update({ status: 'inactive', role: 'doctor_archived' })
       .eq('id', id)
     if (error) throw error
+  },
+
+  /** Appointment count per doctor — feeds the "Appointments per doctor" report chart. */
+  async appointmentsByDoctor() {
+    const { data, error } = await supabase
+      .from('appointments')
+      .select('doctor:doctor_id(full_name)')
+    if (error) throw error
+    const counts = new Map()
+    for (const row of data ?? []) {
+      const name = row.doctor?.full_name ? `Dr. ${row.doctor.full_name}` : 'Unassigned'
+      counts.set(name, (counts.get(name) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 10)
+  },
+
+  /** Doctor count grouped by specialty — feeds a pie chart. */
+  async doctorsBySpecialty() {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('specialty')
+      .eq('role', 'doctor')
+    if (error) throw error
+    const counts = new Map()
+    for (const row of data ?? []) {
+      const key = row.specialty?.trim() || 'Unspecified'
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+    }
+    return Array.from(counts.entries()).map(([name, value]) => ({ name, value }))
   },
 }

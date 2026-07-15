@@ -5,16 +5,17 @@
 // Supabase Realtime updates messages and unread counts instantly.
 
 import { useEffect, useState, useCallback, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import {
   Search, Send, MessageSquare, ArrowLeft, CheckCheck, Check,
-  RefreshCw, Inbox, AlertCircle, Trash2, Users,
-  Paperclip, Camera, Download, FileText, X,
+  RefreshCw, Inbox, AlertCircle, Trash2, Users, History,
+  Paperclip, Camera, Download, FileText, X, Mic, Square, Trash,
 } from 'lucide-react'
 
 import { useAuth }  from '../../hooks/useAuth'
 import { useToast } from '../../hooks/useToast'
 import { directMessageService } from '../../services/directMessageService'
+import { infantService } from '../../services/infantService'
 
 import EmptyState from '../../components/EmptyState'
 import Avatar     from '../../components/ui/Avatar'
@@ -90,12 +91,14 @@ function MessageContent({ content, isMe }) {
 export default function DoctorMessages() {
   const { user } = useAuth()
   const toast    = useToast()
+  const navigate = useNavigate()
   const [searchParams, setSearchParams] = useSearchParams()
 
   // ── State ────────────────────────────────────────────────────────
   const [conversations,    setConversations]    = useState([])
   const [search,           setSearch]           = useState('')
   const [loadingConvs,     setLoadingConvs]     = useState(true)
+  const [infantByParent,   setInfantByParent]   = useState({}) // parent_id -> infant
 
   const activeConvId = searchParams.get('conv') || null
   const [activeConv,       setActiveConv]       = useState(null)
@@ -105,11 +108,16 @@ export default function DoctorMessages() {
   const [sending,          setSending]          = useState(false)
   const [uploadPct,        setUploadPct]        = useState(0)   // 0 = idle
   const [cameraOpen,       setCameraOpen]       = useState(false)
+  const [recording,        setRecording]        = useState(false)
+  const [recordSecs,       setRecordSecs]       = useState(0)
 
   const messagesEndRef = useRef(null)
   const realtimeRef    = useRef(null)    // current message subscription
   const convsRealtimeRef = useRef(null)  // conversation subscription
   const fileInputRef   = useRef(null)
+  const mediaRecorderRef = useRef(null)
+  const audioChunksRef   = useRef([])
+  const recordTimerRef   = useRef(null)
 
   // ── Load conversation list ───────────────────────────────────────
   const loadConversations = useCallback(async () => {
@@ -129,6 +137,21 @@ export default function DoctorMessages() {
   }, [user, search, toast])
 
   useEffect(() => { loadConversations() }, [loadConversations])
+
+  // One-time lookup so the "History" button next to each conversation
+  // knows which infant to open — maps parent_id -> their (first) infant.
+  useEffect(() => {
+    if (!user?.id) return
+    infantService.list({ doctorId: user.id, pageSize: 1000 })
+      .then(({ rows }) => {
+        const map = {}
+        for (const inf of rows) {
+          if (inf.parent?.id && !map[inf.parent.id]) map[inf.parent.id] = inf
+        }
+        setInfantByParent(map)
+      })
+      .catch(() => {})
+  }, [user])
 
   // ── Subscribe to new messages for inbox refresh ──────────────────
   useEffect(() => {
@@ -255,9 +278,9 @@ export default function DoctorMessages() {
     }
   }
 
-  // ── Send an attachment (file picker or camera) ────────────────────
+  // ── Send an attachment (file picker, camera, or voice recording) ──
   const MAX_BYTES = 25 * 1024 * 1024 // 25 MB
-  const sendFile = async (file) => {
+  const sendFile = async (file, kind = null) => {
     if (!file || !activeConvId || sending) return
     if (file.size > MAX_BYTES) {
       toast.error('File is too large (max 25 MB).')
@@ -270,6 +293,7 @@ export default function DoctorMessages() {
         conversationId: activeConvId,
         senderId:       user.id,
         file,
+        kind,
         onProgress:     (p) => setUploadPct(p),
       })
       setMessages(prev => [...prev, saved])
@@ -281,6 +305,60 @@ export default function DoctorMessages() {
       setUploadPct(0)
     }
   }
+
+  // ── Voice recording (native MediaRecorder — no extra dependency) ──
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mimeType = MediaRecorder.isTypeSupported('audio/webm')
+        ? 'audio/webm'
+        : (MediaRecorder.isTypeSupported('audio/mp4') ? 'audio/mp4' : '')
+      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined)
+      audioChunksRef.current = []
+      recorder.ondataavailable = (e) => { if (e.data.size > 0) audioChunksRef.current.push(e.data) }
+      recorder.start()
+      mediaRecorderRef.current = recorder
+      setRecording(true)
+      setRecordSecs(0)
+      recordTimerRef.current = setInterval(() => setRecordSecs((s) => s + 1), 1000)
+    } catch {
+      toast.error('Microphone access was denied or is unavailable.')
+    }
+  }
+
+  const stopRecordingTracks = () => {
+    mediaRecorderRef.current?.stream?.getTracks().forEach((t) => t.stop())
+    clearInterval(recordTimerRef.current)
+    setRecording(false)
+    setRecordSecs(0)
+  }
+
+  const cancelRecording = () => {
+    if (mediaRecorderRef.current) {
+      mediaRecorderRef.current.ondataavailable = null
+      mediaRecorderRef.current.stop()
+    }
+    stopRecordingTracks()
+    audioChunksRef.current = []
+  }
+
+  const finishRecording = () => {
+    const recorder = mediaRecorderRef.current
+    if (!recorder) return
+    recorder.onstop = () => {
+      const blob = new Blob(audioChunksRef.current, { type: recorder.mimeType || 'audio/webm' })
+      audioChunksRef.current = []
+      const ext = (recorder.mimeType || '').includes('mp4') ? 'm4a' : 'webm'
+      const file = new File([blob], `voice-message.${ext}`, { type: blob.type })
+      sendFile(file, 'voice')
+    }
+    recorder.stop()
+    stopRecordingTracks()
+  }
+
+  useEffect(() => () => clearInterval(recordTimerRef.current), [])
+
+  const fmtRecordTime = (s) => `${String(Math.floor(s / 60)).padStart(1, '0')}:${String(s % 60).padStart(2, '0')}`
 
   const onPickFile = (e) => {
     const file = e.target.files?.[0]
@@ -358,8 +436,9 @@ export default function DoctorMessages() {
                   const parent    = conv.user
                   const lastMsg   = conv.lastMessage
                   const isMyMsg   = lastMsg?.sender_id === user?.id
+                  const infant    = parent?.id ? infantByParent[parent.id] : null
                   return (
-                    <li key={conv.id}>
+                    <li key={conv.id} className="group relative">
                       <button
                         onClick={() => openConv(conv.id)}
                         className={cn(
@@ -412,6 +491,16 @@ export default function DoctorMessages() {
                           )}
                         </div>
                       </button>
+
+                      {infant && (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); navigate(`/doctor/infants/${infant.id}`) }}
+                          title={`${infant.name}'s record`}
+                          className="absolute right-2.5 top-2.5 p-1.5 rounded-lg bg-white dark:bg-zinc-900 text-slate-400 hover:text-brand-700 dark:hover:text-white opacity-0 group-hover:opacity-100 shadow-sm border border-slate-200 dark:border-zinc-800 transition"
+                        >
+                          <History size={13} />
+                        </button>
+                      )}
                     </li>
                   )
                 })}
@@ -547,6 +636,29 @@ export default function DoctorMessages() {
                     <div className="text-[10px] text-slate-400 mt-1">Uploading… {uploadPct}%</div>
                   </div>
                 )}
+                {recording ? (
+                  <div className="flex items-center gap-3 px-3.5 py-2.5 rounded-lg bg-red-50 dark:bg-red-500/10 border border-red-200 dark:border-red-900/50">
+                    <span className="relative flex h-2.5 w-2.5 shrink-0">
+                      <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75" />
+                      <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-red-500" />
+                    </span>
+                    <span className="text-sm font-semibold text-red-700 dark:text-red-400 tabular-nums">
+                      {fmtRecordTime(recordSecs)}
+                    </span>
+                    <span className="text-xs text-red-500/80 dark:text-red-400/70 flex-1">Recording voice message…</span>
+                    <button
+                      type="button"
+                      title="Cancel"
+                      onClick={cancelRecording}
+                      className="p-2 rounded-lg text-red-600 hover:bg-red-100 dark:hover:bg-red-500/20 transition"
+                    >
+                      <Trash size={16} />
+                    </button>
+                    <Button type="button" onClick={finishRecording}>
+                      <Square size={13} /> Stop &amp; Send
+                    </Button>
+                  </div>
+                ) : (
                 <div className="flex items-end gap-2">
                   {/* Hidden file input */}
                   <input
@@ -576,6 +688,16 @@ export default function DoctorMessages() {
                   >
                     <Camera size={18} />
                   </button>
+                  {/* Voice message */}
+                  <button
+                    type="button"
+                    title="Record a voice message"
+                    disabled={sending}
+                    onClick={startRecording}
+                    className="p-2.5 rounded-lg text-slate-500 hover:text-brand-600 hover:bg-slate-100 dark:hover:bg-zinc-800 transition disabled:opacity-50"
+                  >
+                    <Mic size={18} />
+                  </button>
                   <textarea
                     value={draft}
                     onChange={(e) => setDraft(e.target.value)}
@@ -594,6 +716,7 @@ export default function DoctorMessages() {
                     {!sending && <><Send size={14} /> Send</>}
                   </Button>
                 </div>
+                )}
               </form>
 
               {cameraOpen && (

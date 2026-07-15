@@ -7,7 +7,7 @@
 //   - Profile image upload (Supabase Storage)
 
 import { useEffect, useState, useCallback } from 'react'
-import { Plus, Search, Pencil, Trash2, Stethoscope, RefreshCw, AlertCircle, Phone, Mail } from 'lucide-react'
+import { Search, Pencil, Trash2, Stethoscope, RefreshCw, AlertCircle, Phone, Mail } from 'lucide-react'
 import { adminService } from '../../services/adminService'
 import { useToast } from '../../hooks/useToast'
 
@@ -34,6 +34,8 @@ export default function AdminDoctors() {
   const [page,    setPage]    = useState(1)
   const [search,  setSearch]  = useState('')
   const [status,  setStatus]  = useState('all')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo,   setDateTo]   = useState('')
   const [loading, setLoading] = useState(true)
 
   // Form modal
@@ -53,7 +55,7 @@ export default function AdminDoctors() {
     setLoading(true)
     try {
       const { rows, total } = await adminService.listDoctors({
-        search, status, page, pageSize: PAGE_SIZE,
+        search, status, dateFrom, dateTo, page, pageSize: PAGE_SIZE,
       })
       setRows(rows); setTotal(total)
     } catch (err) {
@@ -61,12 +63,12 @@ export default function AdminDoctors() {
     } finally {
       setLoading(false)
     }
-  }, [search, status, page, toast])
+  }, [search, status, dateFrom, dateTo, page, toast])
 
   useEffect(() => { load() }, [load])
 
   // Reset to page 1 whenever filters change
-  useEffect(() => { setPage(1) }, [search, status])
+  useEffect(() => { setPage(1) }, [search, status, dateFrom, dateTo])
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE))
 
@@ -170,17 +172,14 @@ export default function AdminDoctors() {
             Doctor management
           </h1>
           <p className="text-sm text-slate-500 dark:text-zinc-500 mt-1">
-            Create, edit and verify doctor accounts. Doctors cannot self-register.
+            Edit and manage doctor accounts. New doctors apply via the public site and are approved on the Doctor Approval page.
           </p>
         </div>
-        <Button onClick={openCreate}>
-          <Plus size={14} /> Add doctor
-        </Button>
       </div>
 
       {/* Card with toolbar + table */}
       <div className="rounded-2xl bg-white dark:bg-zinc-900 border border-slate-200 dark:border-zinc-800 overflow-hidden">
-        <div className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 border-b border-slate-200 dark:border-zinc-800">
+        <div className="p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center gap-3 border-b border-slate-200 dark:border-zinc-800 flex-wrap">
           <div className="relative flex-1 max-w-sm">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
@@ -190,6 +189,24 @@ export default function AdminDoctors() {
               placeholder="Search by name, email, specialty…"
               className="block w-full h-10 pl-9 pr-3 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-sm focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500"
             />
+          </div>
+
+          <div className="flex items-center gap-1.5 text-xs text-slate-500 dark:text-zinc-500">
+            <span>Added</span>
+            <input
+              type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+              className="h-9 px-2 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-200 outline-none focus:border-brand-500"
+            />
+            <span>to</span>
+            <input
+              type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+              className="h-9 px-2 rounded-lg bg-slate-50 dark:bg-zinc-800 border border-slate-200 dark:border-zinc-800 text-xs text-slate-700 dark:text-zinc-200 outline-none focus:border-brand-500"
+            />
+            {(dateFrom || dateTo) && (
+              <button onClick={() => { setDateFrom(''); setDateTo('') }} className="text-brand-700 dark:text-white font-semibold hover:underline">
+                clear
+              </button>
+            )}
           </div>
 
           <div className="flex items-center gap-2">
@@ -238,8 +255,7 @@ export default function AdminDoctors() {
                     <EmptyState
                       icon={Stethoscope}
                       title={search ? 'No doctors match your search' : 'No doctors yet'}
-                      description={search ? 'Try a different search term.' : 'Click "Add doctor" to create the first account.'}
-                      action={!search && <Button onClick={openCreate}><Plus size={14}/> Add doctor</Button>}
+                      description={search ? 'Try a different search term.' : 'Approved doctor applications will appear here.'}
                     />
                   </td>
                 </tr>

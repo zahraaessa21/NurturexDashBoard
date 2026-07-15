@@ -7,6 +7,11 @@
 
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 
+// Public
+import Home from './pages/public/Home'
+import DoctorRegister from './pages/public/DoctorRegister'
+import RegisterMotherStub from './pages/public/RegisterMotherStub'
+
 // Auth
 import AuthPage from './pages/auth/AuthPage'
 
@@ -17,34 +22,35 @@ import ProtectedRoute  from './components/ProtectedRoute'
 // Admin pages
 import AdminDashboard    from './pages/admin/AdminDashboard'
 import AdminDoctors      from './pages/admin/AdminDoctors'
-import AdminPatients     from './pages/admin/AdminPatients'
+import AdminDoctorApplications from './pages/admin/AdminDoctorApplications'
 import AdminInfants      from './pages/admin/AdminInfants'
 import AdminAppointments from './pages/admin/AdminAppointments'
 import AdminReports      from './pages/admin/AdminReports'
+import AdminVaccineSchedule from './pages/admin/AdminVaccineSchedule'
+import AdminProfile      from './pages/admin/AdminProfile'
 
 // Doctor pages
 import DoctorDashboard     from './pages/doctor/DoctorDashboard'
-import DoctorPatients      from './pages/doctor/DoctorPatients'
 import DoctorInfants       from './pages/doctor/DoctorInfants'
 import DoctorAppointments  from './pages/doctor/DoctorAppointments'
 import DoctorVaccinations  from './pages/doctor/DoctorVaccinations'
 import DoctorMessages      from './pages/doctor/DoctorMessages'
 import DoctorMedicalNotes from './pages/doctor/DoctorMedicalNotes'
 import DoctorProfile       from './pages/doctor/DoctorProfile'
+import AppointmentDetail    from './pages/doctor/AppointmentDetail'
 
 // Shared (used by both admin and doctor routes)
 import AlertsPage         from './pages/shared/AlertsPage'
 import InfantDetail       from './pages/shared/InfantDetail'
-import PatientRecord      from './pages/shared/PatientRecord'
 
 export default function App() {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Root → auth (auth page redirects logged-in users to their dashboard) */}
-        <Route path="/" element={<Navigate to="/auth" replace />} />
-
-        {/* Public */}
+        {/* Public marketing site */}
+        <Route path="/" element={<Home />} />
+        <Route path="/register/doctor" element={<DoctorRegister />} />
+        <Route path="/register/mother" element={<RegisterMotherStub />} />
         <Route path="/auth" element={<AuthPage />} />
 
         {/* ── Admin panel ── */}
@@ -58,12 +64,13 @@ export default function App() {
         >
           <Route index               element={<AdminDashboard />} />
           <Route path="doctors"      element={<AdminDoctors />} />
-          <Route path="patients"     element={<AdminPatients />} />
+          <Route path="doctor-applications" element={<AdminDoctorApplications />} />
           <Route path="infants"      element={<AdminInfants />} />
           <Route path="infants/:id"  element={<InfantDetail />} />
           <Route path="appointments" element={<AdminAppointments />} />
-          <Route path="alerts"       element={<AlertsPage />} />
           <Route path="reports"      element={<AdminReports />} />
+          <Route path="vaccine-schedule" element={<AdminVaccineSchedule />} />
+          <Route path="profile"      element={<AdminProfile />} />
         </Route>
 
         {/* ── Doctor panel ── */}
@@ -76,12 +83,11 @@ export default function App() {
           }
         >
           <Route index                 element={<DoctorDashboard />} />
-          <Route path="patients"       element={<DoctorPatients />} />
-          <Route path="patients/:id"   element={<PatientRecord />} />
           <Route path="infants"        element={<DoctorInfants />} />
           <Route path="infants/:id"    element={<InfantDetail />} />
           <Route path="appointments"   element={<DoctorAppointments />} />
           <Route path="vaccinations"   element={<DoctorVaccinations />} />
+          <Route path="appointments/:id" element={<AppointmentDetail />} />
           <Route path="messages"       element={<DoctorMessages />} />
           <Route path="medical-notes"   element={<DoctorMedicalNotes />} />
           <Route path="alerts"         element={<AlertsPage />} />
@@ -89,7 +95,7 @@ export default function App() {
         </Route>
 
         {/* Catch-all */}
-        <Route path="*" element={<Navigate to="/auth" replace />} />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   )

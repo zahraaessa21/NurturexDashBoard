@@ -17,15 +17,38 @@
 //
 // `loading` is derived. `role` is null until profile is fetched —
 // callers MUST treat null as "not yet known", not as "doctor".
+//
+// ── Resilience against tab resume / flaky reconnects ──────────────────
+// When a tab comes back from being backgrounded (or the browser fully
+// discarded it and reloads on refocus — common on mobile), the very
+// first network round-trip after reconnecting can occasionally take a
+// while. We used to have an 8s timeout that, on a single slow request,
+// would set a fatal profileError and boot the user to /auth — even
+// though their session was still perfectly valid in localStorage. That
+// was the bug behind "I switch tabs and get logged out."
+//
+// Fix: generous timeouts + automatic retries, and — critically — we only
+// treat a failure as "you're unauthorized" if we've NEVER successfully
+// loaded a profile for this session. If we already had one loaded and a
+// background refresh attempt fails (transient network blip), we just
+// keep the existing profile/session as-is and log it, instead of wiping
+// the user's session out from under them.
 
 import { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from '../supabaseClient'
 
 const AuthContext = createContext(null)
-const PROFILE_TIMEOUT_MS = 8_000
+
+const REQUEST_TIMEOUT_MS = 6_000   // per attempt
+const MAX_RETRIES        = 1       // total attempts = 1 + MAX_RETRIES
+const RETRY_DELAY_MS     = 800
 
 export const VALID_ROLES = ['admin', 'doctor']
 export const isValidRole = (r) => VALID_ROLES.includes(r)
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
 
 function withTimeout(promise, ms, label = 'operation') {
   return new Promise((resolve, reject) => {
@@ -37,6 +60,20 @@ function withTimeout(promise, ms, label = 'operation') {
   })
 }
 
+/** Runs `fn` with retries + generous per-attempt timeout. Throws the last error if all attempts fail. */
+async function withRetries(fn, label) {
+  let lastErr = null
+  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      return await withTimeout(fn(), REQUEST_TIMEOUT_MS, label)
+    } catch (err) {
+      lastErr = err
+      if (attempt < MAX_RETRIES) await sleep(RETRY_DELAY_MS * (attempt + 1))
+    }
+  }
+  throw lastErr
+}
+
 export function AuthProvider({ children }) {
   const [session,       setSession]      = useState(null)
   const [profile,       setProfile]      = useState(null)
@@ -45,6 +82,11 @@ export function AuthProvider({ children }) {
 
   const mounted = useRef(true)
   useEffect(() => () => { mounted.current = false }, [])
+
+  // Tracks whether we've EVER successfully resolved a profile for the
+  // current session — lets fetchProfile tell a "brand new failure" apart
+  // from "a background refresh hiccuped, but we already know who you are."
+  const everLoadedProfile = useRef(false)
 
   /**
    * Loading is derived state.
@@ -57,23 +99,23 @@ export function AuthProvider({ children }) {
   /**
    * Fetch the profile row (the canonical source of `role`).
    *
-   * If the lookup fails or returns no row, we set `profileError` and leave
-   * `profile` null. Callers/guards must treat that as "unauthorized".
+   * Genuine authorization problems (no profiles row, invalid role) always
+   * set profileError — those are real, not transient.
    *
-   * We never invent a role from user_metadata — that's how doctors end up
-   * on /admin.
+   * Network/timeout failures only set profileError if we've never
+   * successfully loaded a profile before (first load truly has no way to
+   * know who you are). If we already had a profile, we keep it and quietly
+   * log the failure — the user stays signed in with their last-known data.
    */
   const fetchProfile = useCallback(async (userId) => {
     if (!userId) return
-    setProfileError(null)
     try {
-      const { data, error } = await withTimeout(
-        supabase
+      const { data, error } = await withRetries(
+        () => supabase
           .from('profiles')
-          .select('id, email, full_name, role, status, phone, specialty, bio, avatar_url, clinic_name, clinic_address, clinic_phone, created_at, updated_at')
+          .select('id, email, full_name, role, status, phone, specialty, bio, avatar_url, clinic_name, clinic_address, clinic_phone, working_hours, gender, date_of_birth, created_at, updated_at')
           .eq('id', userId)
           .maybeSingle(),
-        PROFILE_TIMEOUT_MS,
         'profile lookup',
       )
       if (!mounted.current) return
@@ -98,12 +140,21 @@ export function AuthProvider({ children }) {
         return
       }
 
+      everLoadedProfile.current = true
+      setProfileError(null)
       setProfile(data)
     } catch (err) {
       if (!mounted.current) return
-      console.error('[Auth] profile lookup failed:', err)
-      setProfileError(err.message ?? 'Could not load profile')
-      setProfile(null)
+      console.error('[Auth] profile lookup failed after retries:', err)
+      if (!everLoadedProfile.current) {
+        // First-ever load truly failed — we have no cached identity to
+        // fall back on, so we have to surface this as an error.
+        setProfileError(err.message ?? 'Could not load profile')
+        setProfile(null)
+      }
+      // else: transient failure during a background refresh. Keep the
+      // existing profile/session untouched — don't sign the user out over
+      // a flaky reconnect.
     }
   }, [])
 
@@ -113,9 +164,8 @@ export function AuthProvider({ children }) {
 
     ;(async () => {
       try {
-        const { data, error } = await withTimeout(
-          supabase.auth.getSession(),
-          PROFILE_TIMEOUT_MS,
+        const { data, error } = await withRetries(
+          () => supabase.auth.getSession(),
           'getSession',
         )
         if (cancelled) return
@@ -125,7 +175,7 @@ export function AuthProvider({ children }) {
         if (s?.user?.id) await fetchProfile(s.user.id)
       } catch (err) {
         if (!cancelled) {
-          console.error('[Auth] getSession failed:', err)
+          console.error('[Auth] getSession failed after retries:', err)
           setProfileError(err.message ?? 'Authentication unavailable')
         }
       } finally {
@@ -142,6 +192,7 @@ export function AuthProvider({ children }) {
           setSession(null)
           setProfile(null)
           setProfileError(null)
+          everLoadedProfile.current = false
           return
         }
 
@@ -151,6 +202,7 @@ export function AuthProvider({ children }) {
         if (!sameUser) {
           setProfile(null)
           setProfileError(null)
+          everLoadedProfile.current = false
           fetchProfile(newSession.user.id)
         }
       },
@@ -182,13 +234,12 @@ export function AuthProvider({ children }) {
     // Fetch the profile inline so we can return the real role to the caller.
     let profileRow = null
     try {
-      const { data: row, error: pErr } = await withTimeout(
-        supabase
+      const { data: row, error: pErr } = await withRetries(
+        () => supabase
           .from('profiles')
-          .select('id, email, full_name, role, status, phone, specialty, bio, avatar_url, clinic_name, clinic_address, clinic_phone, created_at, updated_at')
+          .select('id, email, full_name, role, status, phone, specialty, bio, avatar_url, clinic_name, clinic_address, clinic_phone, working_hours, gender, date_of_birth, created_at, updated_at')
           .eq('id', userId)
           .maybeSingle(),
-        PROFILE_TIMEOUT_MS,
         'profile lookup',
       )
       if (pErr) throw pErr
@@ -219,16 +270,41 @@ export function AuthProvider({ children }) {
       throw new Error('This account is not active. Contact your administrator.')
     }
 
+    everLoadedProfile.current = true
     setProfile(profileRow)
     return { session: data.session, user: data.user, profile: profileRow }
   }, [])
 
   const signOut = useCallback(async () => {
     setProfileError(null)
+    everLoadedProfile.current = false
     const { error } = await supabase.auth.signOut()
     if (error) throw error
     setSession(null)
     setProfile(null)
+  }, [])
+
+  /**
+   * Sends a "reset your password" email via Supabase. The link in that
+   * email brings the user back to /auth with a recovery session —
+   * AuthPage detects that (PASSWORD_RECOVERY auth event) and shows the
+   * "set a new password" form instead of the regular sign-in form.
+   */
+  const resetPassword = useCallback(async (email) => {
+    const { error } = await supabase.auth.resetPasswordForEmail(
+      email.trim(),
+      { redirectTo: `${window.location.origin}/auth` },
+    )
+    if (error) throw error
+  }, [])
+
+  /**
+   * Sets a new password — only valid while the user has an active
+   * recovery session (i.e. right after clicking the email link).
+   */
+  const updatePassword = useCallback(async (newPassword) => {
+    const { error } = await supabase.auth.updateUser({ password: newPassword })
+    if (error) throw error
   }, [])
 
   const refreshProfile = useCallback(() => {
@@ -248,6 +324,8 @@ export function AuthProvider({ children }) {
     isAuthorized: Boolean(profile && isValidRole(profile.role)),
     signIn,
     signOut,
+    resetPassword,
+    updatePassword,
     refreshProfile,
   }
 

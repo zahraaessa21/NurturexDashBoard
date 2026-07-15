@@ -13,6 +13,7 @@ const STYLES = {
   monitoring:   { dot: 'bg-amber-500',    cls: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
   open:         { dot: 'bg-amber-500',    cls: 'bg-amber-50 text-amber-700 dark:bg-amber-500/10 dark:text-amber-400' },
   acknowledged: { dot: 'bg-blue-500',     cls: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' },
+  reviewed:     { dot: 'bg-blue-500',     cls: 'bg-blue-50 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400' },
   inactive:     { dot: 'bg-slate-400',    cls: 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400' },
   archived:     { dot: 'bg-slate-400',    cls: 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400' },
   discharged:   { dot: 'bg-slate-400',    cls: 'bg-slate-100 text-slate-600 dark:bg-zinc-800 dark:text-zinc-400' },
@@ -26,6 +27,7 @@ const STYLES = {
   doctor:       { dot: 'bg-brand-500',    cls: 'bg-brand-50 text-brand-700 dark:bg-zinc-800 dark:text-zinc-200' },
   admin:        { dot: 'bg-purple-500',   cls: 'bg-purple-50 text-purple-700 dark:bg-purple-500/10 dark:text-purple-400' },
   scheduled:    { dot: 'bg-brand-500',    cls: 'bg-brand-50 text-brand-700 dark:bg-zinc-800 dark:text-zinc-200' },
+  reschedule_proposed: { dot: 'bg-violet-500', cls: 'bg-violet-50 text-violet-700 dark:bg-violet-500/10 dark:text-violet-400' },
 }
 
 export default function StatusBadge({ status, className }) {

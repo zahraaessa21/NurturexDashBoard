@@ -2,7 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
-  Menu, Search, Bell, Sun, Moon, ChevronDown,
+  Menu, Bell, Sun, Moon, ChevronDown,
   User, LogOut, Settings, MessageSquare, Calendar,
   Check, X, Clock,
 } from 'lucide-react'
@@ -45,6 +45,22 @@ export default function Topbar({ title, onMenuClick }) {
     setShowProfile(false)
     try { await signOut(); navigate('/auth', { replace: true }) }
     catch (err) { toast.error(err.message ?? 'Could not sign out') }
+  }
+
+  const handleOpenAlert = (n) => {
+    if (!n.is_read) notif.markAlertRead(n.id)
+
+    // The structured "card" types carry an appointment_id — take the
+    // doctor straight to that appointment instead of just marking read
+    // and leaving them to go find it themselves. This is the actual
+    // "wiring" that was missing: lab_results_submitted alerts fired
+    // (Part 3) but nothing happened when you clicked one.
+    const CARD_TYPES = ['lab_tests_requested', 'lab_results_ready', 'medications_prescribed', 'lab_results_submitted']
+    const apptId = n.payload?.appointment_id
+    if (CARD_TYPES.includes(n.type) && apptId) {
+      setShowNotif(false)
+      navigate(`${root}/appointments/${apptId}`)
+    }
   }
 
   const handleAcceptAppt = async (appt) => {
@@ -119,13 +135,6 @@ export default function Topbar({ title, onMenuClick }) {
 
       <div className="flex-1" />
 
-      {/* Search */}
-      <div className="hidden md:flex items-center gap-2 h-9 w-64 px-3 rounded-lg border border-slate-200 dark:border-zinc-800 bg-slate-50 dark:bg-zinc-900 focus-within:border-brand-500 focus-within:ring-2 focus-within:ring-brand-500/15 transition">
-        <Search size={14} className="text-slate-400" />
-        <input type="search" placeholder="Search…"
-          className="bg-transparent border-0 outline-none text-sm w-full text-slate-900 dark:text-white placeholder-slate-400 dark:placeholder-zinc-500" />
-      </div>
-
       {/* Theme */}
       <button type="button" onClick={toggle}
         className="p-2 rounded-lg text-slate-600 dark:text-zinc-400 hover:bg-slate-100 dark:hover:bg-zinc-900 transition"
@@ -133,7 +142,8 @@ export default function Topbar({ title, onMenuClick }) {
         {isDark ? <Sun size={18} /> : <Moon size={18} />}
       </button>
 
-      {/* ── Notifications ─────────────────────────────────────── */}
+      {/* ── Notifications (doctor only — admin has no message/appointment inbox) ── */}
+      {!isAdmin && (
       <div ref={notifRef} className="relative">
         <button type="button"
           onClick={() => { setShowNotif(v => !v); setShowProfile(false) }}
@@ -308,21 +318,32 @@ export default function Topbar({ title, onMenuClick }) {
                   </div>
                 ) : (
                   <ul className="divide-y divide-slate-100 dark:divide-zinc-800">
-                    {notif.alerts.map(n => (
+                    {notif.alerts.map(n => {
+                      const needsAttention = n.type === 'lab_results_submitted' && !n.is_read
+                      return (
                       <li key={n.id}
-                        onClick={() => !n.is_read && notif.markAlertRead(n.id)}
+                        onClick={() => handleOpenAlert(n)}
                         className={cn('px-4 py-3 cursor-pointer hover:bg-slate-50 dark:hover:bg-zinc-800/50 transition',
-                          !n.is_read && 'bg-brand-50/40 dark:bg-brand-500/5')}>
+                          !n.is_read && 'bg-brand-50/40 dark:bg-brand-500/5',
+                          needsAttention && 'bg-amber-50/60 dark:bg-amber-500/10')}>
                         <div className="flex items-start gap-2">
-                          {!n.is_read && <span className="w-1.5 h-1.5 mt-1.5 rounded-full bg-brand-500 flex-shrink-0" />}
+                          {!n.is_read && <span className={cn('w-1.5 h-1.5 mt-1.5 rounded-full flex-shrink-0', needsAttention ? 'bg-amber-500' : 'bg-brand-500')} />}
                           <div className="flex-1 min-w-0">
-                            <div className="text-xs font-bold text-slate-900 dark:text-white">{n.title}</div>
+                            <div className="flex items-center gap-1.5">
+                              <div className="text-xs font-bold text-slate-900 dark:text-white">{n.title}</div>
+                              {needsAttention && (
+                                <span className="text-[9px] font-bold uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700 dark:bg-amber-500/20 dark:text-amber-400">
+                                  Needs review
+                                </span>
+                              )}
+                            </div>
                             {n.body && <div className="text-[11px] text-slate-500 dark:text-zinc-400 mt-0.5">{n.body}</div>}
                             <div className="text-[10px] text-slate-400 dark:text-zinc-600 mt-1">{fmtDate(n.created_at)}</div>
                           </div>
                         </div>
                       </li>
-                    ))}
+                      )
+                    })}
                   </ul>
                 )
               )}
@@ -344,6 +365,7 @@ export default function Topbar({ title, onMenuClick }) {
           </div>
         )}
       </div>
+      )}
 
       {/* Profile */}
       <div ref={profileRef} className="relative">
